@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Property Mapper with Pin + Custom Colors</title>
+    <meta name="viewport" content="initial-scale=1.0" />
+    <meta charset="utf-8" />
+    <style>
+      #map { height: 100vh; width: 100%; }
+      #controls {
+        position: absolute;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 5;
+        background: white;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      }
+      button { margin: 5px; }
+    </style>
+  </head>
+  <body>
+    <div id="controls">
+      <button onclick="savePolygon()">💾 Save Boundary</button>
+      <button onclick="clearPolygon()">🗑️ Clear Boundary</button>
+      <button onclick="deleteBoundary()">❌ Delete Boundary</button>
+    </div>
+    <div id="map"></div>
+
+    <script>
+      let map, drawingManager, currentPolygon, propertyMarker;
+      let propertyId = null;
+      let propertyName = null;
+
+      function getPropertyIdFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('propertyId');
+      }
+
+      async function loadProperty(propId) {
+        try {
+          const res = await fetch(`/property/${propId}`);
+          if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+          const data = await res.json();
+          propertyId = data.propertyId;
+          propertyName = data.propertyName;
+          console.log("✅ Loaded Property:", propertyName);
+
+          initMap(data.center, data.boundary);
+        } catch (err) {
+          console.error("❌ Error loading property:", err);
+          alert('Failed to load property. Check if the Property ID is correct.');
+        }
+      }
+
+      function initMap(centerCoords, existingBoundary) {
+        map = new google.maps.Map(document.getElementById("map"), {
+          center: centerCoords,
+          zoom: 19,
+          mapTypeId: "satellite",
+        });
+
+        // Add a pin on the center coordinates
+        propertyMarker = new google.maps.Marker({
+          position: centerCoords,
+          map: map,
+          title: propertyName,
+          animation: google.maps.Animation.DROP
+        });
+
+        // Drawing Manager with custom polygon styles
+        drawingManager = new google.maps.drawing.DrawingManager({
+          drawingMode: google.maps.drawing.OverlayType.POLYGON,
+          drawingControl: true,
+          drawingControlOptions: {
+            position: google.maps.ControlPosition.TOP_CENTER,
+            drawingModes: ['polygon'],
+          },
+          polygonOptions: {
+            fillColor: '#FF5722',
+            fillOpacity: 0.4,
+            strokeColor: '#E91E63',
+            strokeWeight: 3,
+            clickable: true,
+            editable: true,
+            zIndex: 1,
+          },
+        });
+        drawingManager.setMap(map);
+
+        // Load existing boundary if present
+        if (existingBoundary) {
+          console.log("ℹ️ Loading existing boundary...");
+          const polygonPath = existingBoundary.map(coord => ({ lat: coord.lat, lng: coord.lng }));
+          currentPolygon = new google.maps.Polygon({
+            paths: polygonPath,
+            fillColor: '#FF5722',
+            fillOpacity: 0.4,
+            strokeColor: '#E91E63',
+            strokeWeight: 3,
+            editable: true,
+            map: map,
+          });
+        }
+
+        // When user draws a new polygon
+        google.maps.event.addListener(drawingManager, 'polygoncomplete', function (polygon) {
+          if (currentPolygon) currentPolygon.setMap(null);
+          currentPolygon = polygon;
+          currentPolygon.setEditable(true);
+          console.log("🟢 Polygon drawn:", polygon.getPath().getArray());
+        });
+      }
+
+      function savePolygon() {
+        console.log("💾 Save button clicked");
+
+        if (!propertyName) {
+          alert('❌ Property name not loaded. Please refresh the page.');
+          return;
+        }
+        if (!currentPolygon) {
+          alert('⚠️ Please draw a boundary before saving.');
+          return;
+        }
+
+        const path = currentPolygon.getPath().getArray().map(coord => ({
+          lat: coord.lat(),
+          lng: coord.lng(),
+        }));
+
+        console.log("📦 Sending path:", path);
+
+        fetch('/save-boundary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ propertyName, path })
+        })
+        .then(res => {
+          console.log("📡 Server responded with status:", res.status);
+          return res.json();
+        })
+        .then(data => {
+          console.log("✅ Server returned:", data);
+          alert(`✅ ${data.message}`);
+        })
+        .catch(err => {
+          console.error('❌ Error saving boundary:', err);
+          alert('Failed to save boundary.');
+        });
+      }
+
+      function clearPolygon() {
+        if (currentPolygon) {
+          currentPolygon.setMap(null);
+          currentPolygon = null;
+        }
+        alert('🗑️ Boundary cleared from map (not deleted in DB).');
+      }
+
+      function deleteBoundary() {
+        if (!propertyId) {
+          alert('❌ Property ID not loaded.');
+          return;
+        }
+        if (!confirm("⚠️ Are you sure you want to delete this boundary? This action cannot be undone.")) {
+          return;
+        }
+
+        fetch(`/delete-boundary/${propertyId}`, { method: 'DELETE' })
+          .then(res => res.json())
+          .then(data => {
+            alert(`🗑️ ${data.message}`);
+            clearPolygon();
+          })
+          .catch(err => {
+            console.error('❌ Error deleting boundary:', err);
+            alert('Failed to delete boundary.');
+          });
+      }
+
+      // Main
+      const propertyIdFromUrl = getPropertyIdFromUrl();
+      if (!propertyIdFromUrl) {
+        alert("❌ No propertyId found in URL! Example: ?propertyId=6808ccb45e831a357d25a1e4");
+      } else {
+        loadProperty(propertyIdFromUrl);
+      }
+
+      // Attach functions globally
+      window.savePolygon = savePolygon;
+      window.clearPolygon = clearPolygon;
+      window.deleteBoundary = deleteBoundary;
+    </script>
+
+    <script async
+      src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBbe9fNqbFpLo__wu8a8bq-0Pdd7nDUD18&callback=initMap&libraries=drawing">
+    </script>
+  </body>
+</html>
